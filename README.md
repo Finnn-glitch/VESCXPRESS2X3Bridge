@@ -1,58 +1,94 @@
-# VESC Express
+# VESCXPRESS2X3Bridge
 
-The is the codebase for the VESC Express, which is a WiFi and Bluetooth-enabled logger and IO-board. At the moment it is tested and runs on the ESP32C3, ESP32C6 and ESP32S3 but other ESP32 devices can be added.
+`vesc_express` firmware, built for the VESC2X3Bridge PCB
+(ESP32-S3-WROOM-1-N8R2) specifically — a fork of
+[vedderb/vesc_express](https://github.com/vedderb/vesc_express), narrowed
+to this one board rather than the full multi-board upstream project.
+
+## What the board does
+
+The VESC2X3Bridge PCB bridges a Ninebot X3-series dashboard (G3/ZT3/GT3)
+to a VESC motor controller, sitting on the same shared CAN bus as both.
+This firmware is the hardware base for that bridge — stock `vesc_express`
+plus board-specific config (CAN pins, flash/partition layout, WiFi/BLE),
+no custom C application logic. The actual bridge behavior (dashboard
+frame emulation, lights, profile switching, battery reporting) lives
+entirely in a LispBM script (`main.lisp`) and a QML settings page,
+uploaded separately after flashing this firmware — see the
+[VESCXPRESS2G3Bridge](../VESCXPRESS2G3Bridge) repo for those scripts and
+the full flashing/upload procedure.
+
+## Hardware config (`main/hwconf/hw_vescxpress2g3bridge.h`)
+
+- **CAN**: TX=GPIO48, RX=GPIO45 (confirmed for this PCB).
+- **Flash/partitions**: 8MB (`sdkconfig.defaults.esp32s3_n8r2`,
+  `partition_ota_8mb.csv`) — matches the WROOM-1-N8R2 module's flash size,
+  and includes the `lisp`/`qml` partitions the script/settings page need.
+- **WiFi**: disabled by default (`CONF_WIFI_MODE 0`) — this bridge only
+  needs CAN + VESC Tool over BLE/USB.
+- **BLE**: advertises as `"X3Bridge"` instead of the default `"Express"`.
+
+This fork is scoped to this one board: the other boards' `sdkconfig.defaults.*`
+and unused `partition_*.csv` files that shipped in upstream `vesc_express`
+have been removed. Their `main/hwconf/hw_*.h`/`.c` files are still present
+(only the sdkconfig/partition side was trimmed so far), which means
+`build_all.py` (upstream's build-every-target script, which discovers
+boards by globbing `hw_*.h` files) will still *find* those other boards
+and then fail partway through each one when it can't locate their
+`sdkconfig.defaults.<target>` — don't run it here. Just build the one
+target below.
 
 ## Toolchain
 
-Instructions for how to set up the toolchain can be found here:
-[https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/get-started/linux-macos-setup.html](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/get-started/linux-macos-setup.html)
-
-### Get Release 5.5.4
-
-The instructions linked above will install the master branch of ESP-IDF. To install the stable release you can navigate to the installation directory and use the following commands:
+ESP-IDF **v5.5.4** (other versions are likely to cause compatibility
+issues). Setup instructions:
+[https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/linux-macos-setup.html](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/linux-macos-setup.html)
 
 ```bash
 git clone -b v5.5.4 --recursive https://github.com/espressif/esp-idf.git esp-idf-v5.5.4
 cd esp-idf-v5.5.4/
-./install.sh esp32c3 esp32c6 esp32s3
+./install.sh esp32s3
 ```
 
-At the moment development is done using the stable 5.5.4-release. Note that different IDF-versions are very likely to cause compatibility issues, so it is strongly recommended to use version 5.5.4.
+Activate it in each new shell before building:
+
+```bash
+source /path/to/esp-idf-v5.5.4/export.sh   # bash/zsh
+# or
+source /path/to/esp-idf-v5.5.4/export.fish # fish
+```
 
 ## Building
 
-Set the target chip/architecture with 
-```bash
-idf.py set-target <target> 
-```
-
-where target is esp32c3, esp32c6 or esp32s3. You will need to run a fullclean or remove the build directory when changing targets.
-
-Each normal build target uses its own shared 4 MB base file `sdkconfig.defaults.<target>`.
-
-Boards that need non-default flash or PSRAM settings should instead provide their own full `sdkconfig.defaults.<hw_file>` file next to the shared target configs in the repository root.
-
-Once the toolchain is set up in the current path, the project can be built with
+No `idf.py set-target` step needed — passing `HW_NAME` is enough, since
+`CMakeLists.txt` looks up `hw_vescxpress2g3bridge.h`, reads its
+`HW_TARGET` (`esp32s3_n8r2`), and derives `IDF_TARGET=esp32s3`
+automatically before the ESP-IDF project machinery even runs:
 
 ```bash
-idf.py build
+idf.py build -DHW_NAME="VESCXPRESS2G3Bridge"
 ```
 
-That will create vesc_express.bin in the build directory, which can be used with the bootloader in VESC Tool. If the ESP32c3 does not come with firmware preinstalled, the USB-port can be used for flashing firmware using the built-in bootloader. That also requires bootloader.bin and partition-table.bin which also can be found in the build directory. This can be done from VESC Tool or using idf.py.
+This produces:
+- `build/vesc_express.bin` — the application
+- `build/bootloader/bootloader.bin`
+- `build/partition_table/partition-table.bin`
 
-All targets can be built with
+All three are needed for a first-time flash on a blank chip (via VESC
+Tool's manual/custom-files flash option); updating an already-flashed
+board only needs `vesc_express.bin` through VESC Tool's normal firmware
+update flow. See VESCXPRESS2G3Bridge's `docs/flashing-and-upload-guide.md`
+for the full procedure, including uploading `main.lisp`/
+`main-settings.qml` afterward.
 
-```bash
-python build_all.py
-```
+**Note:** if you change environment variables or hardware config after an
+existing build, run `idf.py reconfigure` (or `idf.py fullclean` for a
+harder reset) before rebuilding — CMake caches the target and won't pick
+up the change automatically.
 
-That will create all required firmware files under the build_output directory, with hardware names as child directories. All target switching is handled automatically with the build_all command.
+## License
 
-### Custom Hardware Targets
-
-If you wish to build the project with custom hardware config files you should add the hardware config files to the "**main/hwconf**" directory and use the HW_NAME build flag
-```bash
-idf.py build -DHW_NAME="VESC Express T"
-```
-
-**Note:** If you ever change the environment variables, or if when you first start using them, you need to first run `idf.py reconfigure` before building (with the environment variables still set of course!), as the build system unfortunately can't automatically detect this change. Running `idf.py fullclean` has the same effect as this forces cmake to rebuild the build configurations.
+GPLv3, inherited from upstream `vesc_express` (see `LICENSE`). This is a
+published modified version per GPLv3 §5 — the hardware-specific changes
+are isolated to `main/hwconf/hw_vescxpress2g3bridge.{h,c}` and
+`sdkconfig.defaults.esp32s3_n8r2`; no other upstream logic is modified.
